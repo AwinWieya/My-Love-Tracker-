@@ -73,9 +73,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:9px;font-size:12px;cursor:pointer;position:relative;border:none;background:none;-webkit-tap-highlight-color:transparent;flex-direction:column;}
 .cal-day.today{font-weight:700;color:var(--pink);}
 .cal-day.today::after{content:'';position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--pink);}
-.cal-day.period-day{background:var(--red-light);color:var(--red);font-weight:600;}
+.cal-day.period-day{background:var(--red);color:#fff;font-weight:600;}
 .cal-day.period-start{background:var(--red);color:#fff;font-weight:700;border-radius:12px 4px 4px 12px;}
-.cal-day.period-end{background:var(--red-light);color:var(--red);font-weight:700;border-radius:4px 12px 12px 4px;border:2px solid var(--red);}
+.cal-day.period-end{background:var(--red);color:#fff;font-weight:700;border-radius:4px 12px 12px 4px;}
 .cal-day.fertile-day{background:var(--green-light);color:var(--green);}
 .cal-day.ovulation-day{background:var(--blue-light);color:var(--blue);font-weight:700;}
 .cal-day.has-opk::before{content:'🧪';position:absolute;top:0px;right:0px;font-size:7px;}
@@ -317,10 +317,14 @@ textarea{resize:vertical;min-height:70px;}
       <button class="tab-btn" onclick="switchLogTab('history')" id="tabHistory">All Logs</button>
     </div>
     <div id="logAddForm">
+      <div id="existingLogBanner" style="display:none;background:var(--orange-light);border:1.5px solid var(--orange);border-radius:14px;padding:12px 14px;margin-bottom:12px;display:none;">
+        <div style="font-size:13px;font-weight:600;color:var(--orange);margin-bottom:6px;">⚠️ A log already exists for this date</div>
+        <button class="btn-primary" style="background:var(--orange);padding:10px;" onclick="editExistingLog()">✏️ Edit Existing Log</button>
+      </div>
       <div class="card">
         <div class="form-group">
           <label class="form-label">📅 Date</label>
-          <input type="date" id="logDate">
+          <input type="date" id="logDate" onchange="checkExistingLog()">
         </div>
 
         <div class="section-divider">🩸 Period</div>
@@ -700,25 +704,53 @@ function getCycleInfo(){
 function getPhaseForDate(ds,cachedLogs){
   if(!settings.lastPeriod)return null;
   const cl=settings.cycleLen,pl=settings.periodLen,ovDay=cl-14,fStart=ovDay-5,fEnd=ovDay+1;
-  // Check actual logged data first — real logs override predictions
   const logs=cachedLogs||(getStore().logs||{});
   const log=logs[ds];
+
+  // Direct log check
   if(log){
     if(log.isPeriodStart||log.isPeriodDay)return'period';
     if(log.isPeriodEnd)return'period-end';
   }
-  // Check if this date falls within a logged period range (between a start and end)
-  const starts=Object.values(logs).filter(l=>l.isPeriodStart).map(l=>l.date).sort();
-  const ends=Object.values(logs).filter(l=>l.isPeriodEnd).map(l=>l.date).sort();
+
+  // Check all logged period ranges
+  const allLogs=Object.values(logs);
+  const starts=allLogs.filter(l=>l.isPeriodStart).map(l=>l.date).sort();
+  const ends=allLogs.filter(l=>l.isPeriodEnd).map(l=>l.date).sort();
+
   for(let i=0;i<starts.length;i++){
     const s=starts[i];
     const e=ends.find(ed=>ed>=s&&dayDiff(s,ed)<15);
-    if(e){if(ds>=s&&ds<=e)return'period';}
-    else{// No end logged yet — only mark period if within expected period length
-      if(ds>=s&&dayDiff(s,ds)<pl)return'period';
+    if(e){
+      // Period has an end — only mark dates strictly between start and end (end day handled above)
+      if(ds>s&&ds<e)return'period';
+      // After end date = not period, don't fall to prediction
+      if(ds>=e)continue;
+    } else {
+      // No end logged yet — mark as period up to expected length
+      if(ds>s&&dayDiff(s,ds)<pl)return'period';
+      // If we're within a started (but not ended) period, don't use prediction
+      if(ds>s&&dayDiff(s,ds)<cl)return'normal';
     }
   }
-  // Fall back to cycle prediction — but only outside any logged period
+
+  // If date falls after any logged period start, check if it's past a logged end
+  // If ANY period start exists before this date AND has a logged end, don't use prediction for dates after that end
+  const hasLoggedEndBefore=ends.some(e=>e<=ds);
+  const hasLoggedStartBefore=starts.some(s=>s<=ds);
+  if(hasLoggedStartBefore&&hasLoggedEndBefore){
+    // Find the most recent end before or on this date
+    const lastEnd=ends.filter(e=>e<=ds).sort().pop();
+    const lastStart=starts.filter(s=>s<=ds).sort().pop();
+    // If last end is after last start, we're in a confirmed non-period — use prediction only for future cycles
+    if(lastEnd>=lastStart){
+      // Use prediction only if enough time has passed for a new cycle
+      const nextCycleStart=addDays(lastStart,cl);
+      if(ds<nextCycleStart)return'normal';
+    }
+  }
+
+  // Fall back to cycle prediction for unlogged future dates
   let d=dayDiff(settings.lastPeriod,ds);if(d<0)return null;
   let dOC=(d%cl)+1;
   if(dOC<=pl)return'period';if(dOC===ovDay)return'ovulation';if(dOC>=fStart&&dOC<=fEnd)return'fertile';return'normal';
@@ -874,11 +906,10 @@ function renderCalendar(){
     const isPStart=log?.isPeriodStart,isPDay=log?.isPeriodDay,isPEnd=log?.isPeriodEnd,hasOPK=log?.opk?.taken,hasLog=!!log;
     let cls='cal-day';
     if(isToday)cls+=' today';
-    // Actual logged data takes priority over predictions
+    // Period: all days solid red from start to end
     if(isPStart)cls+=' period-start';
     else if(isPEnd)cls+=' period-end';
-    else if(isPDay)cls+=' period-day';
-    else if(phase==='period')cls+=' period-day';
+    else if(isPDay||phase==='period')cls+=' period-day';
     else if(phase==='ovulation')cls+=' ovulation-day';
     else if(phase==='fertile')cls+=' fertile-day';
     if(hasOPK)cls+=' has-opk';
@@ -886,7 +917,7 @@ function renderCalendar(){
   }
 }
 function changeMonth(dir){calViewDate.setMonth(calViewDate.getMonth()+dir);renderCalendar();}
-function clickCalDay(ds){document.getElementById('logDate').value=ds;switchPage('log');switchLogTab('add');}
+function clickCalDay(ds){document.getElementById('logDate').value=ds;switchPage('log');switchLogTab('add');checkExistingLog();}
 
 // PRAYER BUTTONS
 function renderPrayerBtns(containerId,type){
@@ -1171,26 +1202,76 @@ function openEditModal(date){
         <button class="toggle-btn cd-${i}${s.condom==='no'?' active':''}" onclick="editTgl('cd','${i}','no',this)">No condom ❌</button>
       </div>
     </div>`).join('');
+  const prayerBtnsStart=PRAYERS.map(p=>`<button class="prayer-btn${data.prayerStart===p?' active':''}" onclick="editSelectPrayer('start','${p}',this)">${p}</button>`).join('');
+  const prayerBtnsEnd=PRAYERS.map(p=>`<button class="prayer-btn${data.prayerEnd===p?' active':''}" onclick="editSelectPrayer('end','${p}',this)">${p}</button>`).join('');
   document.getElementById('editModalContent').innerHTML=`
     <div class="form-group"><label class="form-label">Date</label><input type="date" id="editDate" value="${date}"></div>
     <div class="form-group"><label class="form-label">Period Markers</label>
       <div style="display:flex;gap:7px;flex-wrap:wrap;">
-        <button class="toggle-btn${data.isPeriodStart?' active-red':''}" id="editPSBtn" onclick="this.classList.toggle('active-red')">🔴 Period Start</button>
-        <button class="toggle-btn${data.isPeriodDay?' active-red':''}" id="editPDBtn" onclick="this.classList.toggle('active-red')">🩸 Period Day</button>
-        <button class="toggle-btn${data.isPeriodEnd?' active-red':''}" id="editPEBtn" onclick="this.classList.toggle('active-red')">🛑 Period End</button>
+        <button class="toggle-btn${data.isPeriodStart?' active-red':''}" id="editPSBtn" onclick="toggleEditPeriodMarker('start')">🔴 Period Start</button>
+        <button class="toggle-btn${data.isPeriodDay?' active-red':''}" id="editPDBtn" onclick="toggleEditPeriodMarker('day')">🩸 Period Day</button>
+        <button class="toggle-btn${data.isPeriodEnd?' active-red':''}" id="editPEBtn" onclick="toggleEditPeriodMarker('end')">🛑 Period End</button>
       </div></div>
+    <div id="editPrayerStartGroup" style="display:${data.isPeriodStart?'block':'none'};" class="form-group">
+      <label class="form-label">🕌 Which prayer time did period start? (This prayer = qada later)</label>
+      <div class="prayer-select" id="editPrayerStartBtns">${prayerBtnsStart}</div>
+    </div>
+    <div id="editPrayerEndGroup" style="display:${data.isPeriodEnd?'block':'none'};" class="form-group">
+      <label class="form-label">🕌 Which prayer time did you become clean (suci)?</label>
+      <div class="prayer-select" id="editPrayerEndBtns">${prayerBtnsEnd}</div>
+    </div>
     <div class="form-group"><label class="form-label">Temperature (°C)</label><input type="number" id="editTemp" value="${data.temp||''}" step="0.1" min="35" max="42"></div>
     <div class="form-group"><label class="form-label">Notes</label><textarea id="editNote">${data.note||''}</textarea></div>
     ${sessions.length?`<div class="form-group"><label class="form-label">Intimacy Sessions</label>${sessHTML}</div>`:''}`;
   document.getElementById('editModal').classList.add('show');
 }
 function editTgl(type,idx,val,el){if(!editToggles[type])editToggles[type]={};editToggles[type][idx]=val;const cls=`${type}-${idx}`;document.querySelectorAll('.'+cls).forEach(b=>b.classList.remove('active'));el.classList.add('active');}
+function toggleEditPeriodMarker(type){
+  const btnMap={start:'editPSBtn',day:'editPDBtn',end:'editPEBtn'};
+  const btn=document.getElementById(btnMap[type]);
+  btn.classList.toggle('active-red');
+  const on=btn.classList.contains('active-red');
+  if(type==='start')document.getElementById('editPrayerStartGroup').style.display=on?'block':'none';
+  if(type==='end')document.getElementById('editPrayerEndGroup').style.display=on?'block':'none';
+}
+function editSelectPrayer(type,val,el){
+  const containerId=type==='start'?'editPrayerStartBtns':'editPrayerEndBtns';
+  document.getElementById(containerId).querySelectorAll('.prayer-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  if(type==='start')editToggles.prayerStart=val;
+  else editToggles.prayerEnd=val;
+}
+function checkExistingLog(){
+  const date=document.getElementById('logDate').value;
+  const banner=document.getElementById('existingLogBanner');
+  if(!banner)return;
+  const hasLog=!!(getStore().logs?.[date]);
+  banner.style.display=hasLog?'block':'none';
+}
+function editExistingLog(){
+  const date=document.getElementById('logDate').value;
+  if(date)openEditModal(date);
+}
 function saveEditModal(){
   if(!editingDate)return;
   const store=getStore(),data=store.logs?.[editingDate];if(!data)return;
   const newDate=document.getElementById('editDate').value||editingDate;
   const updSessions=(data.intimacySessions||[]).map((s,i)=>({...s,date:document.getElementById('editSD'+i)?.value||s.date,time:document.getElementById('editST'+i)?.value||s.time,ejaculation:editToggles['ej']?.[i]??s.ejaculation,condom:editToggles['cd']?.[i]??s.condom}));
-  const updated={...data,date:newDate,isPeriodStart:document.getElementById('editPSBtn').classList.contains('active-red'),isPeriodDay:document.getElementById('editPDBtn').classList.contains('active-red'),isPeriodEnd:document.getElementById('editPEBtn').classList.contains('active-red'),temp:parseFloat(document.getElementById('editTemp').value)||null,intimacySessions:updSessions,note:document.getElementById('editNote').value,updatedAt:new Date().toISOString()};
+  // Get prayer selections from toggles (updated via editSelectPrayer) or existing data
+  const newPrayerStart=editToggles.prayerStart!==undefined?editToggles.prayerStart:data.prayerStart;
+  const newPrayerEnd=editToggles.prayerEnd!==undefined?editToggles.prayerEnd:data.prayerEnd;
+  const isPeriodStart=document.getElementById('editPSBtn').classList.contains('active-red');
+  const isPeriodEnd=document.getElementById('editPEBtn').classList.contains('active-red');
+  const updated={...data,date:newDate,
+    isPeriodStart,
+    isPeriodDay:document.getElementById('editPDBtn').classList.contains('active-red'),
+    isPeriodEnd,
+    prayerStart:isPeriodStart?newPrayerStart:'',
+    prayerEnd:isPeriodEnd?newPrayerEnd:'',
+    temp:parseFloat(document.getElementById('editTemp').value)||null,
+    intimacySessions:updSessions,
+    note:document.getElementById('editNote').value,
+    updatedAt:new Date().toISOString()};
   updateStore(d=>{delete d.logs[editingDate];d.logs[newDate]=updated;});
   closeEditModal();showToast('✅ Log updated!');renderAllLogs();renderHome();renderCalendar();buildQadaList();
 }
@@ -1235,6 +1316,7 @@ function switchLogTab(tab){
   document.getElementById('logAddForm').style.display=tab==='add'?'block':'none';
   document.getElementById('logHistory').style.display=tab==='history'?'block':'none';
   if(tab==='history')renderAllLogs();
+  if(tab==='add')checkExistingLog();
 }
 function showToast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500);}
 </script>
