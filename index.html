@@ -697,9 +697,28 @@ function getCycleInfo(){
     fertileEndDate:addDays(cycleStart,fEnd-1),
     isFertile:phase==='fertile'||phase==='ovulation'};
 }
-function getPhaseForDate(ds){
+function getPhaseForDate(ds,cachedLogs){
   if(!settings.lastPeriod)return null;
   const cl=settings.cycleLen,pl=settings.periodLen,ovDay=cl-14,fStart=ovDay-5,fEnd=ovDay+1;
+  // Check actual logged data first — real logs override predictions
+  const logs=cachedLogs||(getStore().logs||{});
+  const log=logs[ds];
+  if(log){
+    if(log.isPeriodStart||log.isPeriodDay)return'period';
+    if(log.isPeriodEnd)return'period-end';
+  }
+  // Check if this date falls within a logged period range (between a start and end)
+  const starts=Object.values(logs).filter(l=>l.isPeriodStart).map(l=>l.date).sort();
+  const ends=Object.values(logs).filter(l=>l.isPeriodEnd).map(l=>l.date).sort();
+  for(let i=0;i<starts.length;i++){
+    const s=starts[i];
+    const e=ends.find(ed=>ed>=s&&dayDiff(s,ed)<15);
+    if(e){if(ds>=s&&ds<=e)return'period';}
+    else{// No end logged yet — only mark period if within expected period length
+      if(ds>=s&&dayDiff(s,ds)<pl)return'period';
+    }
+  }
+  // Fall back to cycle prediction — but only outside any logged period
   let d=dayDiff(settings.lastPeriod,ds);if(d<0)return null;
   let dOC=(d%cl)+1;
   if(dOC<=pl)return'period';if(dOC===ovDay)return'ovulation';if(dOC>=fStart&&dOC<=fEnd)return'fertile';return'normal';
@@ -845,17 +864,21 @@ function renderCalendar(){
   const days=['S','M','T','W','T','F','S'];
   grid.innerHTML=days.map(d=>`<div class="cal-header">${d}</div>`).join('');
   const firstDay=new Date(year,month,1).getDay(),daysInMonth=new Date(year,month+1,0).getDate();
-  const today=todayStr(),store=getStore(),logs=store.logs||{};
+  const today=todayStr();
+  // Load store once for the whole calendar render
+  const store=getStore(),logs=store.logs||{};
   for(let i=0;i<firstDay;i++)grid.innerHTML+='<div></div>';
   for(let d=1;d<=daysInMonth;d++){
     const ds=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const phase=getPhaseForDate(ds),isToday=ds===today,log=logs[ds];
+    const phase=getPhaseForDate(ds,logs),isToday=ds===today,log=logs[ds];
     const isPStart=log?.isPeriodStart,isPDay=log?.isPeriodDay,isPEnd=log?.isPeriodEnd,hasOPK=log?.opk?.taken,hasLog=!!log;
     let cls='cal-day';
     if(isToday)cls+=' today';
+    // Actual logged data takes priority over predictions
     if(isPStart)cls+=' period-start';
     else if(isPEnd)cls+=' period-end';
-    else if(isPDay||phase==='period')cls+=' period-day';
+    else if(isPDay)cls+=' period-day';
+    else if(phase==='period')cls+=' period-day';
     else if(phase==='ovulation')cls+=' ovulation-day';
     else if(phase==='fertile')cls+=' fertile-day';
     if(hasOPK)cls+=' has-opk';
@@ -1002,32 +1025,34 @@ function renderAllLogs(){
 
 // QADA PRAYER CALCULATOR
 function buildQadaList(){
-  const store=getStore(),logs=store.logs||{};
-  const starts=Object.values(logs).filter(l=>l.isPeriodStart&&l.prayerStart).sort((a,b)=>a.date.localeCompare(b.date));
-  const ends=Object.values(logs).filter(l=>l.isPeriodEnd&&l.prayerEnd).sort((a,b)=>a.date.localeCompare(b.date));
-  const existing=store.qada||{};
-  const qadaItems=[];
-  starts.forEach(startLog=>{
-    const endLog=ends.find(e=>e.date>=startLog.date&&dayDiff(startLog.date,e.date)<15);
-    if(!endLog)return;
-    // Generate list of missed prayers
-    const startPIdx=PRAYERS.indexOf(startLog.prayerStart);
-    const endPIdx=PRAYERS.indexOf(endLog.prayerEnd);
-    let d=startLog.date;
-    while(d<=endLog.date){
-      const iFirst=d===startLog.date,isLast=d===endLog.date;
-      const startIdx=iFirst?startPIdx:0;
-      const endIdx=isLast?endPIdx-1:4; // prayers BEFORE clean prayer
-      for(let pi=startIdx;pi<=Math.min(endIdx,4);pi++){
-        if(pi<0)continue;
-        const key=`${d}_${PRAYERS[pi]}`;
-        qadaItems.push({key,date:d,prayer:PRAYERS[pi],done:existing[key]?.done||false});
+  try{
+    const store=getStore(),logs=store.logs||{};
+    const starts=Object.values(logs).filter(l=>l.isPeriodStart&&l.prayerStart).sort((a,b)=>a.date.localeCompare(b.date));
+    const ends=Object.values(logs).filter(l=>l.isPeriodEnd&&l.prayerEnd).sort((a,b)=>a.date.localeCompare(b.date));
+    const existing=store.qada||{};
+    const qadaItems=[];
+    starts.forEach(startLog=>{
+      const endLog=ends.find(e=>e.date>=startLog.date&&dayDiff(startLog.date,e.date)<15);
+      if(!endLog)return;
+      const startPIdx=PRAYERS.indexOf(startLog.prayerStart);
+      const endPIdx=PRAYERS.indexOf(endLog.prayerEnd);
+      let d=startLog.date,safety=0;
+      while(d<=endLog.date&&safety<20){
+        safety++;
+        const iFirst=d===startLog.date,isLast=d===endLog.date;
+        const startIdx=iFirst?startPIdx:0;
+        const endIdx=isLast?endPIdx-1:4;
+        for(let pi=startIdx;pi<=Math.min(endIdx,4);pi++){
+          if(pi<0)continue;
+          const key=`${d}_${PRAYERS[pi]}`;
+          qadaItems.push({key,date:d,prayer:PRAYERS[pi],done:existing[key]?.done||false});
+        }
+        if(d===endLog.date)break;
+        d=addDays(d,1);
       }
-      if(d===endLog.date)break;
-      d=addDays(d,1);
-    }
-  });
-  updateStore(d=>{d.qadaItems=qadaItems;});
+    });
+    updateStore(d=>{d.qadaItems=qadaItems;});
+  }catch(e){console.error('buildQadaList error',e);}
   renderQadaPage();
 }
 function renderQadaPage(){
@@ -1088,8 +1113,11 @@ function renderInsightStats(){
 }
 function renderBBTChart(){
   const canvas=document.getElementById('bbtChart');
+  if(!canvas)return;
   const ctx=canvas.getContext('2d');
-  canvas.width=canvas.offsetWidth||340;canvas.height=140;
+  if(!ctx)return;
+  const w=canvas.parentElement?.offsetWidth||340;
+  canvas.width=w;canvas.height=140;
   const logs=Object.values(getStore().logs||{}).filter(l=>l.temp&&l.date).sort((a,b)=>a.date.localeCompare(b.date)).slice(-30);
   if(logs.length<2){ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.fillText('Log temperature daily to see BBT chart',canvas.width/2,70);document.getElementById('bbtLegend').textContent='';return;}
   const temps=logs.map(l=>l.temp),minT=Math.min(...temps)-.2,maxT=Math.max(...temps)+.2;
@@ -1199,10 +1227,10 @@ function switchPage(page){
   const navs={home:'navHome',calendar:'navCal',log:'navLog',qada:'navQada',insights:'navInsights',settings:'navSet'};
   document.getElementById(pages[page]).classList.add('active');
   document.getElementById(navs[page]).classList.add('active');
-  if(page==='calendar')renderCalendar();
-  if(page==='home')renderHome();
-  if(page==='qada'){buildQadaList();}
-  if(page==='insights')renderInsights();
+  if(page==='calendar')setTimeout(renderCalendar,0);
+  if(page==='home')setTimeout(renderHome,0);
+  if(page==='qada')setTimeout(()=>{renderQadaPage();},0);
+  if(page==='insights')setTimeout(renderInsights,50);
   if(page==='settings')updateStorageInfo();
 }
 function switchLogTab(tab){
