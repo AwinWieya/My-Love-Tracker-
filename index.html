@@ -332,11 +332,11 @@ textarea{resize:vertical;min-height:70px;}
           </div>
         </div>
         <div id="prayerStartGroup" style="display:none;" class="form-group">
-          <label class="form-label">🕌 Period started after which prayer?</label>
+          <label class="form-label">🕌 Which prayer time did your period start? (This prayer needs to be replaced later)</label>
           <div class="prayer-select" id="prayerStartSelect"></div>
         </div>
         <div id="prayerEndGroup" style="display:none;" class="form-group">
-          <label class="form-label">🕌 Period ended / clean after which prayer?</label>
+          <label class="form-label">🕌 Which prayer time did you become clean (suci)? (Resume praying from this prayer — no qada needed)</label>
           <div class="prayer-select" id="prayerEndSelect"></div>
         </div>
         <div class="form-group" id="flowGroup" style="display:none;">
@@ -1024,32 +1024,28 @@ function renderAllLogs(){
 }
 
 // QADA PRAYER CALCULATOR
+// Islamic rules for qada during haid:
+//
+// The user selects WHICH PRAYER TIME the period started.
+// That prayer = the one they couldn't pray = the one that needs QADA later.
+//
+// Examples:
+//   Period started during Subuh time → qada Subuh
+//   Period started during Zohor time → qada Zohor
+//   Period started during Isyak time → qada Isyak
+//
+// Period end (suci): NO qada — just pray normally from that prayer onward
+// Middle period days: NO qada
 function buildQadaList(){
   try{
     const store=getStore(),logs=store.logs||{};
     const starts=Object.values(logs).filter(l=>l.isPeriodStart&&l.prayerStart).sort((a,b)=>a.date.localeCompare(b.date));
-    const ends=Object.values(logs).filter(l=>l.isPeriodEnd&&l.prayerEnd).sort((a,b)=>a.date.localeCompare(b.date));
     const existing=store.qada||{};
     const qadaItems=[];
     starts.forEach(startLog=>{
-      const endLog=ends.find(e=>e.date>=startLog.date&&dayDiff(startLog.date,e.date)<15);
-      if(!endLog)return;
-      const startPIdx=PRAYERS.indexOf(startLog.prayerStart);
-      const endPIdx=PRAYERS.indexOf(endLog.prayerEnd);
-      let d=startLog.date,safety=0;
-      while(d<=endLog.date&&safety<20){
-        safety++;
-        const iFirst=d===startLog.date,isLast=d===endLog.date;
-        const startIdx=iFirst?startPIdx:0;
-        const endIdx=isLast?endPIdx-1:4;
-        for(let pi=startIdx;pi<=Math.min(endIdx,4);pi++){
-          if(pi<0)continue;
-          const key=`${d}_${PRAYERS[pi]}`;
-          qadaItems.push({key,date:d,prayer:PRAYERS[pi],done:existing[key]?.done||false});
-        }
-        if(d===endLog.date)break;
-        d=addDays(d,1);
-      }
+      // The prayer when period started = the one missed = needs qada
+      const key=`${startLog.date}_${startLog.prayerStart}`;
+      qadaItems.push({key,date:startLog.date,prayer:startLog.prayerStart,done:existing[key]?.done||false});
     });
     updateStore(d=>{d.qadaItems=qadaItems;});
   }catch(e){console.error('buildQadaList error',e);}
