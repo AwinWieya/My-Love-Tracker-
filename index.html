@@ -1116,8 +1116,8 @@ function renderBBTChart(){
   if(!canvas)return;
   const ctx=canvas.getContext('2d');
   if(!ctx)return;
-  const w=canvas.parentElement?.offsetWidth||340;
-  canvas.width=w;canvas.height=140;
+  const cw=canvas.parentElement?.offsetWidth||340;
+  canvas.width=cw;canvas.height=140;
   const logs=Object.values(getStore().logs||{}).filter(l=>l.temp&&l.date).sort((a,b)=>a.date.localeCompare(b.date)).slice(-30);
   if(logs.length<2){ctx.fillStyle='#aaa';ctx.font='13px sans-serif';ctx.textAlign='center';ctx.fillText('Log temperature daily to see BBT chart',canvas.width/2,70);document.getElementById('bbtLegend').textContent='';return;}
   const temps=logs.map(l=>l.temp),minT=Math.min(...temps)-.2,maxT=Math.max(...temps)+.2;
