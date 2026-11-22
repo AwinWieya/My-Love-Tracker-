@@ -222,6 +222,15 @@ textarea{resize:vertical;min-height:70px;}
 .install-banner{background:linear-gradient(135deg,var(--pink-light),var(--purple-light));border:1px solid var(--pink-mid);border-radius:14px;padding:12px 14px;margin-bottom:14px;font-size:13px;display:none;}
 .install-banner strong{color:var(--pink);display:block;margin-bottom:3px;}
 .warning-banner{background:var(--orange-light);border:1px solid var(--orange);border-radius:14px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#e65100;}
+.risk-banner{border-radius:18px;padding:16px 18px;margin-bottom:14px;display:flex;align-items:flex-start;gap:12px;}
+.risk-banner .risk-icon{font-size:28px;line-height:1;flex-shrink:0;}
+.risk-banner .risk-body{flex:1;}
+.risk-banner .risk-title{font-size:15px;font-weight:700;margin-bottom:3px;}
+.risk-banner .risk-desc{font-size:12px;line-height:1.5;opacity:0.85;}
+.risk-high{background:#fde8e8;border:1.5px solid var(--red);color:#b71c1c;}
+.risk-medium{background:#fff8e1;border:1.5px solid var(--orange);color:#e65100;}
+.risk-low{background:var(--green-light);border:1.5px solid var(--green);color:#1b5e20;}
+.risk-safe{background:var(--blue-light);border:1.5px solid var(--blue);color:#0d47a1;}
 .opk-compare{background:linear-gradient(135deg,var(--teal-light),var(--green-light));border-radius:14px;padding:12px;border:1px solid var(--teal);margin-top:10px;}
 .opk-compare-title{font-size:11px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:.5px;margin-bottom:7px;}
 .opk-compare-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;}
@@ -262,6 +271,7 @@ textarea{resize:vertical;min-height:70px;}
     <div class="page-header"><h1>🌸 My Tracker</h1><p id="todayDate"></p></div>
     <div class="install-banner" id="installBanner"><strong>📲 Add to Home Screen</strong>Tap Share → "Add to Home Screen" in Safari</div>
     <div id="fertileWarning"></div>
+    <div id="pregnancyRiskBanner"></div>
     <div class="card">
       <div class="card-title">Today's Status</div>
       <div id="cycleStatus" style="margin-bottom:12px;"></div>
@@ -722,35 +732,35 @@ function getPhaseForDate(ds,cachedLogs){
     const s=starts[i];
     const e=ends.find(ed=>ed>=s&&dayDiff(s,ed)<15);
     if(e){
-      // Period has an end — only mark dates strictly between start and end (end day handled above)
+      // Period has a logged end — mark days strictly between start and end as period
       if(ds>s&&ds<e)return'period';
-      // After end date = not period, don't fall to prediction
-      if(ds>=e)continue;
+      // ds >= e: after period end — fall through to prediction (fertile/ovulation may follow)
     } else {
-      // No end logged yet — mark as period up to expected length
+      // No end logged yet — mark as period up to expected length from start
       if(ds>s&&dayDiff(s,ds)<pl)return'period';
-      // If we're within a started (but not ended) period, don't use prediction
-      if(ds>s&&dayDiff(s,ds)<cl)return'normal';
+      // ds is after expected period length but no end logged — fall through to prediction
     }
   }
 
-  // If date falls after any logged period start, check if it's past a logged end
-  // If ANY period start exists before this date AND has a logged end, don't use prediction for dates after that end
-  const hasLoggedEndBefore=ends.some(e=>e<=ds);
-  const hasLoggedStartBefore=starts.some(s=>s<=ds);
-  if(hasLoggedStartBefore&&hasLoggedEndBefore){
-    // Find the most recent end before or on this date
-    const lastEnd=ends.filter(e=>e<=ds).sort().pop();
-    const lastStart=starts.filter(s=>s<=ds).sort().pop();
-    // If last end is after last start, we're in a confirmed non-period — use prediction only for future cycles
-    if(lastEnd>=lastStart){
-      // Use prediction only if enough time has passed for a new cycle
-      const nextCycleStart=addDays(lastStart,cl);
-      if(ds<nextCycleStart)return'normal';
+  // Check: if this date is WITHIN a logged period's cycle (between logged start and next expected start),
+  // use prediction relative to that logged start for fertile/ovulation window accuracy
+  // But don't re-mark it as period if we already know it has ended
+  const sortedStarts=starts.filter(s=>s<=ds).sort();
+  if(sortedStarts.length){
+    const lastStart=sortedStarts[sortedStarts.length-1];
+    const lastEnd=ends.find(e=>e>=lastStart&&dayDiff(lastStart,e)<15);
+    const dFromStart=dayDiff(lastStart,ds);
+    // Only suppress period prediction if there's a logged end before this date
+    if(lastEnd&&ds>lastEnd&&dFromStart<cl){
+      // Within this cycle after period end — use prediction for fertile/ovulation
+      const dOC=dFromStart+1;
+      if(dOC===ovDay)return'ovulation';
+      if(dOC>=fStart&&dOC<=fEnd)return'fertile';
+      return'normal';
     }
   }
 
-  // Fall back to cycle prediction for unlogged future dates
+  // Fall back to global cycle prediction
   let d=dayDiff(settings.lastPeriod,ds);if(d<0)return null;
   let dOC=(d%cl)+1;
   if(dOC<=pl)return'period';if(dOC===ovDay)return'ovulation';if(dOC>=fStart&&dOC<=fEnd)return'fertile';return'normal';
@@ -814,9 +824,59 @@ function logPillNow(){
 function dismissPillPopup(){updateStore(d=>{d.pillPopupDismissed=todayStr();});document.getElementById('pillPopup').classList.remove('show');}
 
 // HOME
+function renderPregnancyRisk(info){
+  const el=document.getElementById('pregnancyRiskBanner');
+  if(!info||!el){if(el)el.innerHTML='';return;}
+  const phase=info.phase;
+  const cycleDay=info.cycleDay;
+  const cl=info.cycleLen;
+  let cls,icon,title,desc;
+
+  if(phase==='period'){
+    cls='risk-safe';icon='🩸';
+    title='Very Low Risk — Period Phase';
+    desc='You are on your period. Pregnancy is very unlikely at this stage. Continue with your normal routine.';
+  } else if(phase==='ovulation'){
+    cls='risk-high';icon='🚨';
+    title='HIGHEST RISK — Ovulation Day!';
+    desc='Today is your predicted ovulation day. The egg is released and can be fertilised. This is the peak pregnancy risk day — be very careful if you are not trying to conceive.';
+  } else if(phase==='fertile'){
+    // Check if approaching ovulation (last 2 days of fertile window) or early fertile
+    const ovDay=cl-14;
+    const daysToOv=ovDay-cycleDay;
+    if(daysToOv<=1){
+      cls='risk-high';icon='⚠️';
+      title='Very High Risk — Approaching Ovulation';
+      desc='Ovulation is 1–2 days away. Sperm can survive up to 5 days inside the body, so unprotected intercourse now has a HIGH chance of pregnancy.';
+    } else {
+      cls='risk-medium';icon='⚡';
+      title='High Risk — Fertile Window';
+      desc='You are in your fertile window. Sperm can survive for several days, so there is a significant chance of pregnancy. Take precautions if you are not trying to conceive.';
+    }
+  } else {
+    // Not period, not fertile, not ovulation — follicular or luteal
+    const ovDay=cl-14;
+    if(cycleDay<ovDay-5){
+      // Follicular phase — post period, before fertile window
+      cls='risk-low';icon='✅';
+      title='Low Risk — Follicular Phase';
+      desc='You are past your period but have not yet reached your fertile window. Pregnancy risk is low, though no method is 100% safe.';
+    } else {
+      // Luteal phase — after ovulation
+      cls='risk-safe';icon='🛡️';
+      title='Very Low Risk — Post-Ovulation Phase';
+      desc='Ovulation has passed. Pregnancy is very unlikely during this phase. Your next period is expected in about ' + info.daysUntilNext + ' days.';
+    }
+  }
+
+  el.innerHTML=`<div class="risk-banner ${cls}"><div class="risk-icon">${icon}</div><div class="risk-body"><div class="risk-title">${title}</div><div class="risk-desc">${desc}</div></div></div>`;
+}
+
 function renderHome(){
   const info=getCycleInfo();
   document.getElementById('todayDate').textContent=formatDate(new Date());
+  // Pregnancy risk banner
+  renderPregnancyRisk(info);
   // Fertile warning
   const fw=document.getElementById('fertileWarning');
   if(info?.isFertile){
@@ -826,7 +886,7 @@ function renderHome(){
     if(hasPillHistory&&!todayPill){
       fw.innerHTML=`<div class="warning-banner">⚠️ <strong>Fertile window!</strong> You haven't logged your pill today. Remember to take it.</div>`;
     }else{
-      fw.innerHTML=`<div class="warning-banner" style="background:var(--green-light);border-color:var(--green);color:#2e7d32;">🌟 <strong>Fertile window!</strong> You are in your fertile window today.</div>`;
+      fw.innerHTML='';// risk banner already covers this
     }
   }else{fw.innerHTML='';}
   if(!info){
