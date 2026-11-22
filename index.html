@@ -304,15 +304,16 @@ textarea{resize:vertical;min-height:80px;}
         <div class="section-divider">🩸 Period</div>
         <div class="form-group">
           <label class="form-label">Period marker for today</label>
-          <div class="form-hint">Tick what applies — you can mark Start and End on separate days</div>
-          <div class="toggle-group" style="gap:10px;">
+          <div class="toggle-group" style="gap:8px;">
             <button class="toggle-btn" id="periodStartBtn" onclick="togglePeriodMarker('start')">🔴 Period Start</button>
+            <button class="toggle-btn" id="periodDayBtn" onclick="togglePeriodMarker('day')">🩸 Period Day</button>
             <button class="toggle-btn" id="periodEndBtn" onclick="togglePeriodMarker('end')">🛑 Period End</button>
           </div>
         </div>
         <div class="form-group" id="flowGroup" style="display:none;">
           <label class="form-label">Flow Intensity</label>
           <div class="toggle-group" id="flowGroup2">
+            <button class="toggle-btn" onclick="selectFlow(this,'spotting')">🔸 Spotting</button>
             <button class="toggle-btn" onclick="selectFlow(this,'light')">💧 Light</button>
             <button class="toggle-btn" onclick="selectFlow(this,'medium')">💧💧 Medium</button>
             <button class="toggle-btn" onclick="selectFlow(this,'heavy')">💧💧💧 Heavy</button>
@@ -541,7 +542,7 @@ function updateStore(fn){const d=loadStorage();fn(d);saveStorage(d);}
 let pinBuffer='',isSettingPin=false,pinSetStep=0,tempPin='';
 let calViewDate=new Date();
 let logTags={tex:[],col:[],smell:[],sym:[],pill:[],flow:''};
-let periodMarkers={start:false,end:false};
+let periodMarkers={start:false,day:false,end:false};
 let isOPKOn=false,opkResult='',opkConfidence='';
 let intimacySessions=[];
 let settings={cycleLen:28,periodLen:5,lastPeriod:''};
@@ -626,7 +627,7 @@ function checkPeriodEndedPopup(){
   // Find latest period start log without a corresponding period end within 10 days
   const logs=store.logs||{};
   let latestStart=null;
-  Object.values(logs).forEach(l=>{if(l.isPeriodStart&&!l.isPeriodEnd) latestStart=latestStart?( l.date>latestStart?l.date:latestStart ):l.date;});
+  Object.values(logs).forEach(l=>{if(l.isPeriodStart) latestStart=latestStart?( l.date>latestStart?l.date:latestStart ):l.date;});
   if(!latestStart)return;
   // Check if period end already logged
   const hasEnd=Object.values(logs).some(l=>l.isPeriodEnd&&l.date>=latestStart);
@@ -735,11 +736,12 @@ function renderCalendar(){
   for(let d=1;d<=daysInMonth;d++){
     const ds=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const phase=getPhaseForDate(ds),isToday=ds===today,log=logs[ds];
-    const isPeriodStart=log?.isPeriodStart,isPeriodEnd=log?.isPeriodEnd,hasOPK=log?.opk?.taken,hasLog=!!log;
+    const isPeriodStart=log?.isPeriodStart,isPeriodDay=log?.isPeriodDay,isPeriodEnd=log?.isPeriodEnd,hasOPK=log?.opk?.taken,hasLog=!!log;
     let cls='cal-day';
     if(isToday)cls+=' today';
     if(isPeriodStart)cls+=' period-start';
     else if(isPeriodEnd)cls+=' period-end';
+    else if(isPeriodDay)cls+=' period-day';
     else if(phase==='period')cls+=' period-day';
     else if(phase==='ovulation')cls+=' ovulation-day';
     else if(phase==='fertile')cls+=' fertile-day';
@@ -756,7 +758,9 @@ function clickCalDay(ds){document.getElementById('logDate').value=ds;switchPage(
 function togglePeriodMarker(type){
   periodMarkers[type]=!periodMarkers[type];
   document.getElementById('period'+type.charAt(0).toUpperCase()+type.slice(1)+'Btn').classList.toggle('active-red',periodMarkers[type]);
-  document.getElementById('flowGroup').style.display=periodMarkers.start?'block':'none';
+  // Show flow group if any period marker is on
+  const showFlow=periodMarkers.start||periodMarkers.day||periodMarkers.end;
+  document.getElementById('flowGroup').style.display=showFlow?'block':'none';
 }
 function toggleOPK(){
   isOPKOn=!isOPKOn;
@@ -826,6 +830,7 @@ function saveLog(){
   const logData={
     date,
     isPeriodStart:periodMarkers.start,
+    isPeriodDay:periodMarkers.day,
     isPeriodEnd:periodMarkers.end,
     flow:logTags.flow||'',
     temp:parseFloat(document.getElementById('logTemp').value)||null,
@@ -848,8 +853,9 @@ function saveLog(){
 function resetLogForm(){
   document.getElementById('logDate').value=todayStr();
   document.getElementById('logTemp').value='';document.getElementById('logNote').value='';
-  periodMarkers={start:false,end:false};
+  periodMarkers={start:false,day:false,end:false};
   document.getElementById('periodStartBtn').classList.remove('active-red');
+  document.getElementById('periodDayBtn').classList.remove('active-red');
   document.getElementById('periodEndBtn').classList.remove('active-red');
   document.getElementById('flowGroup').style.display='none';
   isOPKOn=false;opkResult='';opkConfidence='';
@@ -868,7 +874,8 @@ function resetLogForm(){
 function renderLogItem(data,showActions=true){
   const tags=[];
   if(data.isPeriodStart)tags.push(`<span class="log-tag tag-period">🔴 Period Start${data.flow?' · '+data.flow:''}</span>`);
-  if(data.isPeriodEnd)tags.push(`<span class="log-tag tag-period-end">🛑 Period End</span>`);
+  if(data.isPeriodDay)tags.push(`<span class="log-tag tag-period">🩸 Period Day${data.flow?' · '+data.flow:''}</span>`);
+  if(data.isPeriodEnd)tags.push(`<span class="log-tag tag-period-end">🛑 Period End${data.flow?' · '+data.flow:''}</span>`);
   if(data.opk?.taken){
     const oc=data.opk.result==='positive'?'tag-opk-pos':data.opk.result==='faint'?'tag-opk-faint':'tag-opk-neg';
     const conf=data.opk.confidence?` · ${data.opk.confidence}`:'';
@@ -926,8 +933,9 @@ function openEditModal(date){
   document.getElementById('editModalContent').innerHTML=`
     <div style="margin-bottom:14px;"><label class="form-label">Date</label><input type="date" id="editDate" value="${date}" style="width:100%"></div>
     <div style="margin-bottom:14px;"><label class="form-label">Period Markers</label>
-      <div style="display:flex;gap:8px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="toggle-btn${data.isPeriodStart?' active-red':''}" id="editPSBtn" onclick="this.classList.toggle('active-red')">🔴 Period Start</button>
+        <button class="toggle-btn${data.isPeriodDay?' active-red':''}" id="editPDBtn" onclick="this.classList.toggle('active-red')">🩸 Period Day</button>
         <button class="toggle-btn${data.isPeriodEnd?' active-red':''}" id="editPEBtn" onclick="this.classList.toggle('active-red')">🛑 Period End</button>
       </div></div>
     <div style="margin-bottom:14px;"><label class="form-label">Temperature (°C)</label><input type="number" id="editTemp" value="${data.temp||''}" step="0.1" min="35" max="42" style="width:100%"></div>
@@ -941,7 +949,7 @@ function saveEditModal(){
   const store=getStore();const data=store.logs?.[editingDate];if(!data)return;
   const newDate=document.getElementById('editDate').value||editingDate;
   const updSessions=(data.intimacySessions||[]).map((s,i)=>({...s,date:document.getElementById('editSD'+i)?.value||s.date,time:document.getElementById('editST'+i)?.value||s.time,ejaculation:editToggles['ej']?.[i]??s.ejaculation,condom:editToggles['cd']?.[i]??s.condom}));
-  const updated={...data,date:newDate,isPeriodStart:document.getElementById('editPSBtn').classList.contains('active-red'),isPeriodEnd:document.getElementById('editPEBtn').classList.contains('active-red'),temp:parseFloat(document.getElementById('editTemp').value)||null,intimacySessions:updSessions,note:document.getElementById('editNote').value,updatedAt:new Date().toISOString()};
+  const updated={...data,date:newDate,isPeriodStart:document.getElementById('editPSBtn').classList.contains('active-red'),isPeriodDay:document.getElementById('editPDBtn').classList.contains('active-red'),isPeriodEnd:document.getElementById('editPEBtn').classList.contains('active-red'),temp:parseFloat(document.getElementById('editTemp').value)||null,intimacySessions:updSessions,note:document.getElementById('editNote').value,updatedAt:new Date().toISOString()};
   updateStore(d=>{delete d.logs[editingDate];d.logs[newDate]=updated;});
   closeEditModal();showToast('✅ Log updated!');renderAllLogs();renderHome();renderCalendar();updateStorageInfo();
 }
